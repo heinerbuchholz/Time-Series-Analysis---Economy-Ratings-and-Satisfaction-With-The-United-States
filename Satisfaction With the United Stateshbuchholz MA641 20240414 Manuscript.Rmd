@@ -32,7 +32,7 @@ library(TSA) # For extended autocorrelation function plots
 library(ggplot2) # Fancier ACF/ PACF plots
 library(lmtest) # To detect heteroscedasticity
 
-df <- read.csv("~/hbuchholz MA641 Manuscript/Satisfaction With The United States.csv")
+df <- read.csv("~/hbuchholz_mA641_manuscript/upload/Satisfaction With The United States.csv")
 View(df)
 summary(df)
 str(df) # Includes data type

@@ -18,7 +18,7 @@ library(lmtest) # To detect heteroscedasticity
 library(rugarch) # To incorporate GARCH model
 library(ggplot2) # Fancier ACF/ PACF plots
 
-df <- read.csv("~/hbuchholz MA641 Manuscript/Economy.csv")
+df <- read.csv("~/hbuchholz_ma641_manuscript/upload/Economy.csv")
 View(df)
 summary(df)
 str(df) # Include data type
