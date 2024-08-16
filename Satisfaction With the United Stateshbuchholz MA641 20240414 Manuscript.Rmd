@@ -1,0 +1,185 @@
+---
+title: "Time Series Analysis I - Economy and Satisfaction With The United States"
+author: "Heiner Buchholz"
+date: "2024-05-10"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+---
+
+### Motivation
+
+We are interested in identifying social issues trends and forecasting a given open topic. Referred by the project regulations, we selected data from public polls on the topic "Satisfaction With The United States" as advertised on Gallup.com. The polls are publicly available containing inquiries about Americans' satisfaction with the way things are going in the U.S. Our data answers the question "In general, are you satisfied or dissatisfied with the way things are going in the United States at this time?" To explore the applications of advanced GARCH models, we selected relevant financially-related data on the field of the economy. The relationship helps illustrate associations between American's satisfaction with the U.S. and its economy. Practical interest is given to the topic of confidence on current economic conditions answering the question "How would you rate economic conditions in this country today- as excellent, good, only fair, or poor?" It is chocking to see how America's satisfaction ratings from its own citizens have been at strike since 2008 despite recent economic surpass.\
+
+### Satisfaction With The U.S. Data
+
+Data was entered from tables available on the web at news.gallup.com/poll. To assess seasonality, data was retrieved from the General-Mood-Country tab [^2]. The satisfaction was assessed in three levels namely 'Satisfied,' 'Dissatisfied,' and 'No Opinion-' measured in population percentage. The dissatisfaction can be easily calculated by subtracting ('Satisfied' + Dissatisfied') from 100 %. Thus, it is more practical to focus on 'Satisfied' only. Timely data appears unsorted and containing duplicates which will be easily handled. The timeline ranges from February 1979 to March 2024 with irregular time intervals (!). The data-set contains 429 entries which is more than enough for our seasonal study. Satisfaction values range from as low as 7 % to 71 % with an average of about one third of the U.S. population. The fields needed proper formatting using the predetermined R tools. Character values were converted to numeric for time series analysis. The date has been formatted as YYYY/MM since daily data was virtually unavailable. Invalid or non-available entries appeared isolated and were hence filled by their previous observation, a common methodology in low-volatility seasonal data.\
+
+Satisfaction with the U.S. doesn't exhibit any apparent linear trend (downward or upward) since 1979. It reaches its highest during the mid-late 80s to early 90s and around 2000, and it has been there about lower than average since 2008. The seasonal trends of the original series don't appear obvious but we will find out that a seasonal model is a better fit than a non-seasonal one. The findings reveals underlying seasonal patterns of the undifferentiated series.\
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r }
+library(zoo) # To handle missing values
+library(lubridate) # To format time data
+library(xts) # To handle irregular time series data
+library(forecast) # To aid seasonality detection
+library(tseries) # Test for stationarity
+library(TSA) # For extended autocorrelation function plots
+library(ggplot2) # Fancier ACF/ PACF plots
+library(lmtest) # To detect heteroscedasticity
+
+df <- read.csv("~/hbuchholz MA641 Manuscript/Satisfaction With The United States.csv")
+View(df)
+summary(df)
+str(df) # Includes data type
+missing_values_per_column <- colSums(is.na(df)) # Include number of missing values
+print(missing_values_per_column)
+
+# Pre-processing
+unique(df$No.opinion..) # Look at unique values that might not be numbers
+df$No.opinion..[df$No.opinion.. %in% c("*")] <- NA
+df$No.opinion.. <- na.locf(df$No.opinion..) # Replace missing values by-last-observed-carried-forward
+df$No.opinion.. <- as.numeric(df$No.opinion..) # Format "No Opinion" field as numeric for TS analysis
+df$Date <- substring(df$Date, 1, 8) # Trim the date
+df$Date <- ym(df$Date) # format the date as YYYYMM
+df <- df[order(df$Date), ] # Sort data by date
+df <- df[!duplicated(df$Date), ] # Remove duplicates
+X <- df$Date
+
+# TS Plots
+plot(df$Satisfied..~X, type = "l", col = "green", ylim = c(0, 100), main = "Satisfaction With The United States", xlab = "Date (months)", ylab = "Satisfied (%)")
+lines(df$Dissatisfied..~X, type = "l", col = "orange")
+lines(df$No.opinion..~X, type = "l", col = "grey")
+legend("topright", legend = c("Satisfied", "Dissatisfied", "No Opinion"), col = c("green", "orange", "grey"), lty = 1)
+```
+```{r }
+#Irregular TS
+data_xts <- xts(df$Satisfied.., order.by = X)
+print(head(data_xts))
+```
+(!)
+
+```{r }
+# Resampling to monthly data using interpolation
+X <- seq(from = start(data_xts), to = end(data_xts), by = "month")
+data_ts <- ts(na.approx(data_xts, xout = X), frequency = 12)
+
+summary(data_ts)
+length(data_ts)
+```
+26% of monthly time instances were missing (limitation). The data has been re-sampled to monthly by filling the missing monthly values with their interpolated values according to the time series which introduces assumptions. Note that the time steps must be regular in order for the auto-correlations to be valid.\
+
+```{r }
+# Decomposition
+plot(decompose(data_ts, type = "additive"))
+
+# Regular and partial autocorrelation function plots
+data_ts %>%
+  ggtsdisplay()
+```
+
+ACF's slow exponential decay suggests non-stationarity of the monthly series. A seasonal trend can now be seen more clearly from the decomposition.\
+
+```{r }
+# Augmented Dickey-Fuller test
+print(adf.test(data_ts, alternative = "stationary"))
+```
+
+Dickey-Fuller test's p-value > 0.01 fails to reject the null hypothesis of non-stationarity. Therefore, we must assume the monthly series is non-stationary. Since our series is monthly, we first consider a seasonal differencing at yearly lags to make the series stationary.\
+
+```{r }
+# Seasonal Differencing
+data_ts_Diff <- diff(data_ts, lag = 12)
+
+# Augmented Dickey-Fuller test on the differenced series
+print(adf.test(data_ts_Diff, alternative = "stationary"))
+```
+Dickey-Fuller test's p-value is now much less than 0.01 rejecting the null hypothesis of non-stationarity. Thus, the seasonally differenced series is stationary at 1% significance.\
+
+```{r }
+data_ts_Diff %>%
+  ggtsdisplay(lag.max = 48)
+```
+
+PACF's exponential decay of the seasons and ACF's 1 repeated season suggests a seasonal MA(1) part. ACF's exponential decay and PACF's 1 signifficant non-seasonal lag suggests a non-seasonal AR(1) part. Including the seasonal difference order D = 1, that is definitely a multiplicative SARIMA(1, 0, 0) X (0, 1, 1)12 model.\
+
+```{r }
+# ~ SARIMA(1, 0, 0) X (0, 1, 1)12
+model = Arima(data_ts, order = c(1, 0, 0), seasonal = list(order = c(0, 1, 1), period = 12), method = 'ML') # Maximum likelihood
+model
+```
+```{r }
+# Automatically fitting an ARIMA model
+model_auto <- auto.arima(data_ts, D = 1, stepwise = TRUE, approximation = FALSE, trace = TRUE)
+summary(model_auto)
+```
+
+Considering other candidates with the help of the auto ARIMA function, our best model remains SARIMA(1,0,0)(2,1,0)[12] in terms of Akaike information criterion (AIC) and parsimony. That is, our model AIC is 3020.72, much smaller than auto ARIMA's lowest AIC (3131.44). Moreover, our model has only 2 parameters and auto ARIMA's best model has 3. Because we are interested in prediction, we only use AIC for model comparison.\
+
+```{r }
+ε <- rstandard(model) # Standardized residuals
+plot(ε, type = 'o', col = 'blue', main = 'Residuals Plot', xlab = "t")
+abline(h = 0, col = "red")
+```
+
+No apparent shape indicating non-constant variance of the standardized residuals with a few potential outliers.\
+
+```{r }
+# Fit a linear model
+Y <- fitted(model)
+
+data_lm <- data.frame(residuals = ε, fitted = Y)
+model_lm <- lm(ε ~ Y + I(Y^2), data = data_lm)
+
+# Breusch-Pagan Test
+print(bptest(model_lm))
+```
+
+Breusch-Pagan's p-value greater than 0.01 fails to reject the null hypothesis of constant variance. Thus, the constancy of variance assumption has been satisfied.\
+
+```{r }
+# Residual Diagnostics
+checkresiduals(model)
+```
+
+The standardized residuals fall significantly outside the normal distribution indicating non-normality of the residuals. On the other hand, Ljung-Box's p-value greater than 0.01 fails to reject the null hypothesis of uncorrelated residuals so the independence assumption has been satisfied.\
+
+```{r }
+tsdiag(model)
+
+# Ljung-Box test for individual lags 2, 3, 4, ...
+Ljung_Box_p <- sapply(2: 12, function(ε_lag) {
+    Ljung_Box <- Box.test(ε, lag = ε_lag, type = "Ljung-Box")
+    return(Ljung_Box$p.value)
+})
+# P-values for each lag
+names(Ljung_Box_p) <- 2: 12
+print(Ljung_Box_p)
+```
+Standardized residuals mostly within [-2, +2] with no apparent patterns is indicative of the model fitting the data well. ACF of residuals shows all bars within the confidence bounds so the residuals appear as white noise. Ljung-Box p-values > 0.01 for all considered lags implies no significant autocorrelation/ no patterns left unexplained.\
+
+```{r }
+# Normality Test
+shapiro.test(ε)
+```
+Shapiro-Wilk test p-value much less than 0.01 rejects the null hypothesis of normally distributed residuals so the normality assumption has been violated at 1% significance.\
+
+```{r }
+# Forecast
+Y_h <- forecast(Y, h = 96, level = c(85)) # Eight years into the future
+H <- seq(from = end(data_xts), length.out = 96, by = "month")
+
+plot(X, data_ts, type = "l", main = "Satisfaction With The U.S.", xlab = "Date (months)", xlim = range(c(X, H)), ylab = "Satisfied (%)")
+lines(X, Y, col = "orange", type = "l")
+x_poly <- c(H, rev(H))
+y_poly <- c(Y_h$lower[, '85%'], rev(Y_h$upper[, '85%']))
+polygon(x_poly, y_poly, col = rgb(1, 0, 0, 0.3), border = NA)
+lines(H, Y_h$mean, col = "red", type = "l")
+legend("topright", legend = c("Observed", "Fitted", "Forecast"), col = c("black", "orange", "red"), lty = 1)
+```
+
+Although the model fits the data well, the forecast shows an absence of trend, that is, the overall rate of satisfaction with the United States is not expected to change in the long run. The seasonal differencing possibly sets the mean of the series to 0. Future directions are needed.\

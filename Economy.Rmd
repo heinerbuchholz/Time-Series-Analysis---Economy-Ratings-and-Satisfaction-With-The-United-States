@@ -1,0 +1,272 @@
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Economy Data
+
+Similarly, data was retrieved from Consumer-Views-Economy at Gallup.com [^1]. The economic conditions were rated in five different levels namely 'Poor,' 'Only Fair,' 'Good,' 'Excellent,' and 'No Opinion' measured in population percentage. 'Excellent' has a lot of 0-values that may add multi-collinearity issues for our model so we rather focus on 'Good.' The timeline ranges from January 1992 to March 2024. The data-set contains 270 entries. 'Good' values range from 4 % to 57 % with an average of 28.36 %. Economy ratings don't exhibit any apparent linear or seasonal trend since 1992. They reach their highest during the early 90s and around 2008 with times of high volatility (explosive increase/ decrease) around 2008 and 2020, proper behavior of financial data.\
+
+```{r }
+library(zoo) # To handle missing values
+library(lubridate) # To format time data
+library(xts) # To handle irregular time series data
+library(forecast) # To aid seasonality detection
+library(tseries) # Test for stationarity
+library(TSA) # Extended autocorrelation function plots
+library(lmtest) # To detect heteroscedasticity
+library(rugarch) # To incorporate GARCH model
+library(ggplot2) # Fancier ACF/ PACF plots
+
+df <- read.csv("~/hbuchholz MA641 Manuscript/Economy.csv")
+View(df)
+summary(df)
+str(df) # Include data type
+missing_values_per_column <- colSums(is.na(df)) # Include number of missing values
+print(missing_values_per_column)
+
+# Pre-processing
+unique(df$No.Opinion..) # Look at unique values that might not be numbers
+unique(df$Excellent..) # Look at unique values that might not be numbers
+df$No.Opinion..[df$No.Opinion.. %in% c("*", "--")] <- NA
+df$Excellent..[df$Excellent.. %in% c("*", "--")] <- NA
+df$No.Opinion.. <- na.locf(df$No.Opinion..) # Replace missing values by-last-observed-carried-forward
+df$Excellent.. <- na.locf(df$Excellent..) # Replace missing values by-last-observed-carried-forward
+df$No.Opinion.. <- as.numeric(df$No.Opinion..) # Format "No Opinion" field as numeric for TS analysis
+df$Excellent.. <- as.numeric(df$Excellent..) # Format "Excellent" field as numeric for TS analysis
+df$Date <- substring(df$Date, 1, 8) # Trim the date
+df$Date <- ym(df$Date) # format the date as YYYYMM
+df <- df[order(df$Date), ] # Sort data by date
+df <- df[!duplicated(df$Date), ] # Remove duplicates
+X <- df$Date
+
+# TS Plots
+plot(df$Poor..~X, type = "l", col = "red", ylim = c(0, 100), main = "Economy", xlab = "Date (Months)", ylab = "Economic conditions rate (%)")
+lines(df$Only.fair..~X, type = "l", col = "orange")
+lines(df$Good..~X, type = "l", col = "yellow")
+lines(df$Excellent..~X, type = "l", col = "green")
+lines(df$No.Opinion..~X, type = "l", col = "grey")
+legend("topright", legend = c("Poor", "Only Fair", "Good", "Excellent", "No.Opinion.."), col = c("red", "orange", "yellow", "green", "grey"), lty = 1)
+```
+```{r }
+# Irregular TS
+data_xts <- xts(df$Good.., order.by = df$Date)
+print(head(data_xts))
+```
+```{r }
+# Resampling to annual data using interpolation
+X <- seq(start(data_xts), end(data_xts), by = "month")
+data_ts <- ts(na.approx(data_xts, xout = X), frequency = 12)
+
+summary(data_ts)
+n <- length(data_ts)
+print(n)
+```
+43% of monthly time instances were missing! Similarly, this adds limitations for our model reliability despite the size of the training data.\
+
+```{r }
+# Regular and partial autocorrelation function plots
+data_ts %>%
+  ggtsdisplay()
+```
+
+ACF's slow decay indicates non-stationarity of the monthly series.\
+
+```{r }
+# Augmented Dickey-Fuller Test for stationarity
+print(adf.test(data_ts, alternative = "stationary"))
+```
+
+Dickey-Fuller test's p-value greater than 0.01 fails to reject the null hypothesis of non-stationarity so we assume the monthly series is non-stationary. We difference the series to make it stationary.\
+
+```{r }
+# First Differencing
+data_ts_diff <- diff(data_ts)
+
+# Augmented Dickey-Fuller test on the differenced series
+print(adf.test(data_ts_diff, alternative = "stationary"))
+```
+Dickey-Fuller test's p-value is now much smaller than 0.01 rejecting the null hypothesis of non-stationarity. Therefore, we verify that the differenced series is stationary at 1% significance.\
+
+```{r }
+data_ts_diff %>%
+  ggtsdisplay(lag.max = 48)
+```
+The ACF and PACF plots for the differenced series look complex. None exhibit patterns of exponential decay so they are not helpful in determining the orders of our model. Then, we rely on the extended autocorrelation function (EACF).\
+
+```{r }
+eacf(data_ts_diff)
+```
+The EACF plot shows a triangle with vertex at (3, 4) and MA order no less than 2. Hence, we consider AR orders from 0 to 3 and MA orders from 2 to 4.\
+
+```{r }
+for(p in 0: 3){
+  for(q in 2: 4){
+    model <- Arima(data_ts, order = c(p, 1, q), method = 'ML') # Maximum likelihood
+    cat("\np =", p, "q =", q, ":\n")
+    Y <- fitted(model)
+    print(model)
+    
+    # Linear model
+    se <- residuals(model, standardize = TRUE)
+    data_lm <- data.frame(residuals = se, fitted = Y)
+    model_lm <- lm(se ~ Y + I(Y^2), data = data_lm)
+    
+    # Breusch-Pagan Test
+    print(bptest(model_lm))
+  }
+}
+```
+
+White test's p-values less than 0.01 for all candidates reject the null hypothesis of constant variance of the residuals so the constancy of variance assumption has been violated at 1%-significance. The current best model is ARIMA(3, 1, 3) with significantly lower AIC (1890.31).\
+
+```{r }
+model <- Arima(data_ts, order = c(3, 1, 3), method = 'ML') # Current best mean model
+ε <- rstandard(model) # Standardized residuals
+
+plot(ε^2, type = 'o', col = 'blue', main = 'Residuals-Squared Plot', xlab = "t")
+    abline(h = 0, col = "red")
+```
+
+The squared standardized residuals plot exhibits volatility clusters which calls for the need of a GARCH model. We consider the auto correlations of the squared residuals, absolute returns, and squared returns to help us determine GARCH orders.\
+
+```{r }
+# Autocorrelation of Squared Residuals and returns for GARCH parameters
+Y <- fitted(model)
+data_ts_return <- diff(log(data_ts)) # Returns
+
+print("Residual-Squared:")
+eacf(ε^2)
+
+print("Absolute Returns:")
+eacf(abs(data_ts_return))
+
+acf(data_ts_return^2, main = "Series Return-Squared")
+pacf(data_ts_return^2, main = "Series Return-Squared")
+```
+
+Both the squared residuals and absolute returns EACF plots show a triangle with vertex at (3, 3). For the the squared returns, the ACF plot tails off and the PACF plot shows 2 significant lags suggesting GARCH orders qg = 0 and pg = 2.\
+
+```{r }
+for(p in 0: 3){
+  for(q in 0: 3){
+    model_garch <- ugarchspec(variance.model = list(model = "sGARCH",
+                                                    garchOrder = c(p, q), submodel = NULL,
+                                                    external.regressors = NULL,
+                                                    variance.targeting = FALSE),
+                              
+                              mean.model = list(armaOrder = c(3, 3),
+                                                external.regressors = NULL,
+                                                include.mean = FALSE
+                                                ),
+                              
+                              distribution.model = "norm") # Stationary differenced series presumes uncorrelated returns with zero mean/ no constant term
+    
+    GARCH_fit <- ugarchfit(spec = model_garch, data = data_ts_return)
+    print(GARCH_fit)
+  }
+}
+```
+
+We compare the models with standard parameters in terms of AIC, Weighted Ljung-Box test results which indicate uncorrelated residuals (aim of GARCH modeling), and Adjusted Pearson Goodness-of-Fit test results. Some 0-order models did not even converge. The model that best weights these three criteria is ARIMA(3, 1, 3)-GARCH(3, 2) with AIC = -1.9302, Weighted Ljung-Box Test on Standardized Residuals p-value > 0.01 and Adjusted Pearson Goodness-of-Fit Test passing for 2/ 4 groups. We further run model diagnostics.\
+
+```{r }
+# Model Diagnosis
+model_garch <- ugarchspec(variance.model = list(model = "sGARCH",
+                                                    garchOrder = c(3, 2), submodel = NULL,
+                                                    external.regressors = NULL,
+                                                    variance.targeting = FALSE),
+                              
+                              mean.model = list(armaOrder = c(3, 3),
+                                                external.regressors = NULL,
+                                                include.mean = FALSE
+                                                ),
+                          distribution.model = "norm"
+                          )
+    
+GARCH_fit <- ugarchfit(spec = model_garch, data = data_ts_return)
+
+plot(GARCH_fit, which = 'all')
+```
+
+The most relevant outputs include the ACF of observations which shows that most patterns in the returns of the monthly series were captured by the GARCH model; the ACF of squared observations which indicates that the model has captured most of the heteroscedasticity; and the normal QQ plot which shows slight deviations from the line indicating potential departures from normality.\
+
+```{r }
+# Linear model on Squared Std. GARCH Residuals
+e <- GARCH_fit@fit$residuals # ARIMA-GARCH residuals
+X_lm <- 1: length(e)
+data_lm <- data.frame(squared_residuals = e^2, time_index = X_lm)
+model_lm <- lm(e^2 ~ X_lm, data = data_lm)
+
+# Breusch-Pagan Test
+print(bptest(model_lm))
+```
+White test's p-value > 0.01 now fails to reject the null hypothesis of constant variance of the residuals so the constancy of variance assumption has been satisfied by incorporating GARCH.\
+
+```{r }
+# Normality Test
+e_ts <- ts(e, frequency = 12) # Series Residual
+shapiro.test(e_ts)
+```
+Shapiro Wilk test's p-value much smaller than 0.01 rejects the null hypothesis of normally distributed residuals so the normality assumption is violated (limitation).\
+
+```{r }
+# Forecasts
+
+R <- fitted(GARCH_fit) # Fitted returns
+model_garch_h = ugarchforecast(fitORspec = GARCH_fit, n.ahead = 48) # Four years into the future
+R_h <- fitted(model_garch_h) # Return forecast
+H <- seq(from = end(data_xts), length.out = 48, by = "month")
+V <- GARCH_fit@fit$sigma^2 # Fitted volatility
+V_h <- sigma(model_garch_h)^2 # Volatility forecast
+
+Y_h_first = 16 # Initial estimate
+C <- data_ts[1] * exp(cumsum(R)) # Fitted cumulative levels
+C_h <- Y_h_first * exp(cumsum(R_h)) # Cumulative level forecasts
+VC_h <- Y_h_first / 2 * exp(cumsum(V_h)) # Cumulative Volatility forecast
+
+# Scaling factor
+Y_lm <- lm(data_ts[-1] ~ C)
+Y <- coef(Y_lm)[2] * C + coef(Y_lm)[1]
+Y_h <- coef(Y_lm)[2] * C_h + coef(Y_lm)[1]
+W_h <- coef(Y_lm)[2] * VC_h + coef(Y_lm)[1]
+
+# 85% CI
+u <- Y_h + 1.96 * W_h
+l <- Y_h - 1.96 * W_h
+
+plot(X, data_ts, type = 'l', main = "Economy", xlab = "Date (months)", ylab = "Economic Conditions Rate (%)", xlim = range(c(X, H)))
+lines(X[-1], Y, col = "orange")
+lines(H, Y_h, col = "red")
+matlines(H, cbind(l, u), col = "magenta", lty = 2, lwd = 0.8)
+legend("bottomleft", legend = c("Observed", "Fitted", "Forecast", "95 % C.I."), col = c("black", "orange", "red", "magenta"), lty = 1)
+
+plot(X[-1], data_ts_return, type = 'l', main = "Economy", xlab = "Date (months)", ylab = "Return", xlim = range(c(X, H)))
+lines(H, R_h, col = "red")
+lines(X[-1], R, col = "orange")
+legend("bottomright", legend = c("Observed", "Fitted", "Forecast"), col = c("black", "orange", "red"), lty = 1)
+
+plot(H, R_h, type = 'l', main = "Economy Forecast", xlab = "Date", ylab = "Return", col = "red")
+plot(X[-1], V, type = 'l', main = "Economy Model", xlab = "Date", ylab = "Volatility", col = "blue")
+```
+
+The original series has been reconstructed by fitting the cumulative levels of the ARIMA-GARCH returns. The return forecast shows an overall decrease, that is, the "Good" rating % for the economic conditions of the United States are projected to increase less and less until 2028. The good economic ratings are expected to peak at 37 % of the population next year with 95 % confidence. The model exhibits volatility highs proper of financial data. They correspond to the years 2008 and 2020, coinciding with the observed drops in economic ratings at the beginning of Barak Obama's term and the pandemic.\
+
+### Conclusions
+
+We were able to successfully simulate the satisfaction of Americans with the U.S. using a yearly seasonal model as well as make confident predictions on future ratings for the U.S. economy. The economy model was able to capture the patterns in the returns of the economic ratings successfully. The variance for the model residuals was found constant which increases our confidence in the predictions. Furthermore, the residuals were found random which indicates that our models successfully captured the underlying auto-correlations and dynamics in the data.\
+
+The missing months still coaxed us into underestimating the variability of our data which might have misled our conclusions. More robust methods (e.g. K-nearest neighbors (KNN) or Expectation Maximization (EM)) are part of our future studies to handle the missing values if collecting more data becomes impossible. On the other hand, the residuals were found to be not normally distributed which could potentially lead to incorrect inferences about our model parameters and specification. Future directions include employing different model distributions such as t-distribution especially to improve the goodness of fit for the GARCH model, removing potential outliers, and applying transformations such as Box-Cox to try to make the distribution more normal. We hope that our study provides insight on factors that may improve the satisfaction with the U.S.\
+
+### References
+
+Gallup, Inc. (n.d.). Gallup poll topics and complete trends, including presidential job approval, elections, business, institutions, social issues, religion and more. https://news.gallup.com/poll/trends.aspx \
+
+[^1]: Gallup. (2022, October 31). Economy. Gallup.com. https://news.gallup.com/poll/1609/consumer-views-economy.aspx
+
+[2]: Gallup. (2022a, October 27). Satisfaction with the United States. Gallup.com. \ https://news.gallup.com/poll/1669/General-Mood-Country.aspx \
+
+Case study of bitcoin historical and S\&P 500 stock datasets. (n.d.-a). https://www.researchgate.net/publication/361755725\Seasonal\and\\\Nonseasonal\GARCH\Time\Series\Analysis\Case\Study\of\Bitcoin\\\Historical\and\SP\500\stock\datasets \
+
+Applying arima-GARCH models for time series analysis ... (n.d.-a). https://www.researchgate.net/publication/361623092\Applying\ARIMA-GARCH\models\for\time\series\analysis\on\Seasonal\and\Nonseasonal\\\datasets \
+
